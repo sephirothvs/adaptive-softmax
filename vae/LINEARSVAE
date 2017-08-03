@@ -1,0 +1,70 @@
+local CVLinear, parent = torch.class('nn.CVLinear', 'nn.Module')
+
+function CVLinear:__init(inputSize, outputSize, lambda)
+    parent.__init(self)
+    self.weight = torch.Tensor(outputSize, inputSize)
+    self.gradWeight = torch.Tensor(outputSize, inputSize)
+    self.lambda = lambda
+    self.loss = 0
+    self.matrix = torch.Tensor(inputSize, inputSize)
+    self.normvec = torch.Tensor(inputSize)
+    self.n = inputSize
+    self:reset()
+end
+
+function CVLinear:reset(stdv)
+    if stdv then
+        stdv = stdv * math.sqrt(3)
+    else
+        stdv = 1./math.sqrt(self.weight:size(2))
+    end
+    self.weight:uniform(-stdv, stdv)
+    return self
+end
+
+function CVLinear:updateAddBuffer(input)
+    local nframe = input:size(1)
+    self.addBuffer = self.addBuffer or input.new()
+    if self.addBuffer:nElement() ~= nframe then
+        self.addBuffer:resize(nframe):fill(1)
+    end
+end
+
+function CVLinear:updateOutput(input)
+    local nframe = input:size(1)
+    local nElement = self.output:nElement()
+    self.output:resize(nframe, self.weight:size(1))
+    self:updateAddBuffer(input)
+    self.output:addmm(0, self.output, 1, input, self.weight:t())
+   
+    local vec = torch.sqrt(torch.sum(torch.pow(self.weight, 2), 1))
+    self.normvec = vec:t() * vec
+    self.matrix:copy(torch.cdiv(self.weight:t()*self.weight, self.normvec) )
+    self.acos = torch.acros(self.matrix)
+    self.mu = torch.mean(self.acos)
+    self.sigma = (self.matrix - self.mu):pow(2):mean()
+    self.loss = -self.lambda * (self.mu - self.sigma)
+    return self.output
+end
+
+function CVLinear:updateGradInput(input, gradOutput)
+    if self.gradInput then
+        local nElement = self.gradInput:nElement()
+        self.gradInput:resizeAs(input)
+        if self.gradInput:nElement() ~= nElement then
+            self.gradInput:zero()
+        end
+        self.gradInput:addmm(0, 1, gradOutput, self.weight)
+        return self.gradInput
+    end
+end
+
+function CVLinear:accGradParameters(input, gradOutput, scale)
+    scale = scale or 1
+    self.gradWeight:addmm(scale, gradOutput:t(), input)
+    
+    local du = 1 / (self.n*self.n) * self.acos
+    local dv = 2 / (self.n*self.n) * (1 - 1/(self.n*self.n)) * (self.acos - self.mu)
+    local dacos =  - 1 / torch.sqrt(1 - torch.cmul(self.acos, self.acos))
+    
+end
